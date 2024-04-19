@@ -1,6 +1,6 @@
 import re
 from bson import ObjectId
-from flask_restplus import Resource, Api, reqparse, fields, Namespace
+from flask_restx import Resource, Api, reqparse, fields, Namespace
 from app.utils import get_logger, auth
 from app import utils
 from . import base_query_fields, ARLResource, get_arl_parser
@@ -156,7 +156,7 @@ class DeleteARLAssetScope(ARLResource):
             if not self.get_scope_data(scope_id):
                 return utils.build_ret(ErrorMsg.NotFoundScopeID, {"scope_id": scope_id})
 
-        table_list = ["asset_domain", "asset_site", "asset_ip", "scheduler"]
+        table_list = ["asset_domain", "asset_site", "asset_ip", "scheduler", "asset_wih"]
 
         for scope_id in scope_id_list:
             utils.conn_db(self._table).delete_many({'_id': ObjectId(scope_id)})

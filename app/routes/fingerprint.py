@@ -1,8 +1,16 @@
-from flask_restplus import Resource, Api, reqparse, fields, Namespace
+import json
+import time
+import yaml
+from werkzeug.datastructures import FileStorage
+from urllib.parse import quote
+from flask import make_response
+from flask_restx import Resource, Api, reqparse, fields, Namespace
 from bson import ObjectId
 from app.utils import get_logger, auth, parse_human_rule, transform_rule_map
 from app import utils
 from app.modules import ErrorMsg
+from app.services import check_expression_with_error, have_human_rule_from_db
+from app.services import check_expression
 from . import base_query_fields, ARLResource, get_arl_parser
 
 ns = Namespace('fingerprint', description="指纹信息")
@@ -50,14 +58,16 @@ class ARLFingerprint(ARLResource):
         human_rule = args.pop('human_rule')
         name = args.pop('name')
 
-        rule_map = parse_human_rule(human_rule)
-        if rule_map is None:
-            return utils.build_ret(ErrorMsg.RuleInvalid, {"rule": human_rule})
+        if have_human_rule_from_db(human_rule):
+            return utils.build_ret(ErrorMsg.RuleAlreadyExists, {"rule": human_rule})
+
+        flag, err = check_expression_with_error(human_rule)
+        if not flag:
+            return utils.build_ret(ErrorMsg.RuleInvalid, {"error": str(err)})
 
         data = {
             "name": name,
-            "rule": rule_map,
-            "human_rule": transform_rule_map(rule_map),
+            "human_rule": human_rule,
             "update_date": utils.curr_date_obj()
         }
 
@@ -90,3 +100,88 @@ class DeleteARLFinger(ARLResource):
             utils.conn_db('fingerprint').delete_one(query)
 
         return utils.build_ret(ErrorMsg.Success, {'_id': id_list})
+
+
+@ns.route('/export/')
+class ExportARLFinger(ARLResource):
+
+    @auth
+    def get(self):
+        """
+        指纹导出
+        """
+        items = []
+        results = list(utils.conn_db('fingerprint').find())
+        for result in results:
+            item = dict()
+            item["name"] = result["name"]
+            item["rule"] = result["human_rule"]
+            items.append(item)
+
+        data = yaml.dump(items, default_flow_style=False, sort_keys=False, allow_unicode=True)
+        response = make_response(data)
+        filename = "fingerprint_{}_{}.yml".format(len(items), int(time.time()))
+        response.headers['Content-Type'] = 'application/octet-stream'
+        response.headers["Access-Control-Expose-Headers"] = "Content-Disposition"
+        response.headers["Content-Disposition"] = "attachment; filename={}".format(quote(filename))
+
+        return response
+
+
+file_upload = reqparse.RequestParser()
+file_upload.add_argument('file',
+                         type=FileStorage,
+                         location='files',
+                         required=True,
+                         help='JSON file')
+
+
+@ns.route('/upload/')
+class UploadARLFinger(ARLResource):
+
+    @auth
+    @ns.expect(file_upload)
+    def post(self):
+        """
+        指纹上传
+        """
+        args = file_upload.parse_args()
+        file_data = args['file'].read()
+        try:
+            obj = yaml.safe_load(file_data)
+            if not isinstance(obj, list):
+                return utils.build_ret(ErrorMsg.Error, {'msg': "not list obj"})
+
+            error_cnt = 0
+            success_cnt = 0
+            repeat_cnt = 0
+
+            for rule in obj:
+                human_rule = rule["rule"]
+                rule_name = rule['name']
+
+                rule_flag = check_expression(human_rule)
+                if not rule_flag:
+                    error_cnt += 1
+                    continue
+
+                result = utils.conn_db('fingerprint').find_one({"human_rule": human_rule})
+                if result:
+                    repeat_cnt += 1
+                    continue
+
+                data = {
+                    "name": rule_name,
+                    "human_rule": human_rule,
+                    "update_date": utils.curr_date_obj()
+                }
+                success_cnt += 1
+
+                utils.conn_db('fingerprint').insert_one(data)
+
+            return utils.build_ret(ErrorMsg.Success, {'error_cnt': error_cnt,
+                                                      'repeat_cnt': repeat_cnt,'success_cnt': success_cnt})
+        except Exception as e:
+            return utils.build_ret(ErrorMsg.Error, {'msg': str(e)})
+
+

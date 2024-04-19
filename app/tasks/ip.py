@@ -1,10 +1,10 @@
 from bson.objectid import  ObjectId
 import time
 from app import services
-from app.modules import ScanPortType, TaskStatus, CollectSource
+from app.modules import ScanPortType, TaskStatus
 from app.services import fetchCert, run_risk_cruising, run_sniffer
 from app import utils
-from app.services.commonTask import CommonTask
+from app.services.commonTask import CommonTask, BaseUpdateTask, WebSiteFetch
 from app.config import Config
 
 
@@ -38,8 +38,6 @@ class IPTask(CommonTask):
         self.ip_info_list = []
         self.ip_set = set()
         self.site_list = []
-        self.site_302_list = []
-        self.web_analyze_map = {}
         self.cert_map = {}
         self.service_info_list = []
         self.npoc_service_target_set = set()
@@ -50,6 +48,7 @@ class IPTask(CommonTask):
         self.task_name = None
         self.asset_ip_port_set = set()
         self.asset_ip_info_map = dict()
+        self.base_update_task = BaseUpdateTask(self.task_id)
 
     def set_asset_ip(self):
         """
@@ -59,13 +58,7 @@ class IPTask(CommonTask):
 
     def async_ip_info(self):
         """
-        用来同步发现的 ip 中的信息，仅仅在监控阶段使用
-        """
-        raise NotImplementedError()
-
-    def async_site_info(self, site_info_list):
-        """
-        用来同步发现的 site 中的信息，仅仅在监控阶段使用
+        用来同步发现的 ip 中的信息（包括新添加端口），仅仅在IP 任务 监控阶段使用
         """
         raise NotImplementedError()
 
@@ -84,7 +77,8 @@ class IPTask(CommonTask):
             "os_detect": self.options.get("os_detection", False),
             "port_parallelism": self.options.get("port_parallelism", 32),  # 探测报文并行度
             "port_min_rate": self.options.get("port_min_rate", 64),  # 最少发包速率
-            "custom_host_timeout": None  # 主机超时时间(s)
+            "custom_host_timeout": None,  # 主机超时时间(s)
+            "exclude_ports": self.options.get("exclude_ports", None), # 排除端口
         }
         # 只有当设置为自定义时才会去设置超时时间
         if self.options.get("host_timeout_type") == "custom":
@@ -156,57 +150,6 @@ class IPTask(CommonTask):
 
         self.site_list.extend(alive_site)
 
-    def fetch_site(self):
-        site_info_list = services.fetch_site(self.site_list)
-
-        for site_info in site_info_list:
-            curr_site = site_info["site"]
-            if curr_site not in self.site_list:
-                self.site_302_list.append(curr_site)
-            site_path = "/image/" + self.task_id
-            file_name = '{}/{}.jpg'.format(site_path, utils.gen_filename(curr_site))
-            site_info["task_id"] = self.task_id
-            site_info["screenshot"] = file_name
-
-            # 调用读取站点识别的结果，并且去重
-            if self.web_analyze_map:
-                finger_list = self.web_analyze_map.get(curr_site, [])
-                known_finger_set = set()
-                for finger_item in site_info["finger"]:
-                    known_finger_set.add(finger_item["name"].lower())
-
-                for analyze_finger in finger_list:
-                    analyze_name = analyze_finger["name"].lower()
-                    if analyze_name not in known_finger_set:
-                        site_info["finger"].append(analyze_finger)
-
-            utils.conn_db('site').insert_one(site_info)
-
-        if self.task_tag == 'monitor':
-            self.async_site_info(site_info_list)
-
-    def site_screenshot(self):
-        '''***站点截图***'''
-        capture_sites = self.site_list + self.site_302_list
-        capture_save_dir = Config.SCREENSHOT_DIR + "/" + self.task_id
-        services.site_screenshot(capture_sites, concurrency=6, capture_dir=capture_save_dir)
-
-
-    def update_services(self, services, elapsed):
-        elapsed = "{:.2f}".format(elapsed)
-        self.update_task_field("status", services)
-        query = {"_id": ObjectId(self.task_id)}
-        update = {"$push": {"service": {"name": services, "elapsed": float(elapsed)}}}
-        utils.conn_db('task').update_one(query, update)
-
-    def update_task_field(self, field = None, value = None):
-        query = {"_id": ObjectId(self.task_id)}
-        update = {"$set": {field: value}}
-        utils.conn_db('task').update_one(query, update)
-
-    def site_identify(self):
-        self.web_analyze_map = services.web_analyze(self.site_list)
-
     def ssl_cert(self):
         if self.options.get("port_scan"):
             self.cert_map = ssl_cert(self.ip_info_list)
@@ -254,32 +197,6 @@ class IPTask(CommonTask):
         if self.service_info_list:
             utils.conn_db('service').insert(self.service_info_list)
 
-
-    def file_leak(self):
-        for site in self.site_list:
-            pages = services.file_leak([site], utils.load_file(Config.FILE_LEAK_TOP_2k))
-            for page in pages:
-                item = page.dump_json()
-                item["task_id"] = self.task_id
-                item["site"] = site
-
-                utils.conn_db('fileleak').insert_one(item)
-
-    def risk_cruising(self):
-        """运行PoC任务"""
-        poc_config = self.options.get("poc_config", [])
-        plugins = []
-        for info in poc_config:
-            if not info.get("enable"):
-                continue
-            plugins.append(info["plugin_name"])
-
-        result = run_risk_cruising(plugins=plugins, targets=self.site_list)
-        for item in result:
-            item["task_id"] = self.task_id
-            item["save_date"] = utils.curr_date()
-            utils.conn_db('vuln').insert_one(item)
-
     def npoc_service_detection(self):
         targets = []
         for ip_info in self.ip_info_list:
@@ -296,30 +213,6 @@ class IPTask(CommonTask):
             item["task_id"] = self.task_id
             item["save_date"] = utils.curr_date()
             utils.conn_db('npoc_service').insert_one(item)
-
-    def site_spider(self):
-        entry_urls_list = []
-        for site in self.site_list:
-            entry_urls_list.append([site])
-
-        site_spider_result = services.site_spider_thread(entry_urls_list)
-        for site in site_spider_result:
-            target_urls = []
-            target_urls.extend(site_spider_result[site])
-
-            if not target_urls:
-                continue
-
-            page_map = services.page_fetch(target_urls)
-            for url in page_map:
-                item = {
-                    "site": site,
-                    "task_id": self.task_id,
-                    "source": CollectSource.SITESPIDER
-                }
-                item.update(page_map[url])
-
-                utils.conn_db('url').insert_one(item)
 
     def brute_config(self):
         plugins = []
@@ -340,14 +233,15 @@ class IPTask(CommonTask):
             utils.conn_db('vuln').insert_one(item)
 
     def run(self):
-        self.update_task_field("start_time", utils.curr_date())
+        base_update = self.base_update_task
+        base_update.update_task_field("start_time", utils.curr_date())
         '''***端口扫描开始***'''
         if self.options.get("port_scan"):
-            self.update_task_field("status", "port_scan")
+            base_update.update_task_field("status", "port_scan")
             t1 = time.time()
             self.port_scan()
             elapse = time.time() - t1
-            self.update_services("port_scan", elapse)
+            base_update.update_services("port_scan", elapse)
 
         # 存储服务信息
         if self.options.get("service_detection"):
@@ -355,87 +249,58 @@ class IPTask(CommonTask):
 
         '''***证书获取开始***'''
         if self.options.get("ssl_cert"):
-            self.update_task_field("status", "ssl_cert")
+            base_update.update_task_field("status", "ssl_cert")
             t1 = time.time()
             self.ssl_cert()
             elapse = time.time() - t1
-            self.update_services("ssl_cert", elapse)
+            base_update.update_services("ssl_cert", elapse)
 
-        self.update_task_field("status", "find_site")
+        base_update.update_task_field("status", "find_site")
         t1 = time.time()
         self.find_site()
         elapse = time.time() - t1
-        self.update_services("find_site", elapse)
+        base_update.update_services("find_site", elapse)
 
-        '''***站点识别***'''
-        if self.options.get("site_identify"):
-            self.update_task_field("status", "site_identify")
-            t1 = time.time()
-            self.site_identify()
-            elapse = time.time() - t1
-            self.update_services("site_identify", elapse)
-
-
-        self.update_task_field("status", "fetch_site")
-        t1 = time.time()
-        self.fetch_site()
-        elapse = time.time() - t1
-        self.update_services("fetch_site", elapse)
-
-        '''***站点截图***'''
-        if self.options.get("site_capture"):
-            self.update_task_field("status", "site_capture")
-            t1 = time.time()
-            self.site_screenshot()
-            elapse = time.time() - t1
-            self.update_services("site_capture", elapse)
-
-        '''站点爬虫'''
-        if self.options.get("site_spider"):
-            self.update_task_field("status", "site_spider")
-            t1 = time.time()
-            self.site_spider()
-            elapse = time.time() - t1
-            self.update_services("site_spider", elapse)
-
-        """风险PoC任务"""
-        if self.options.get("poc_config"):
-            self.update_task_field("status", "PoC")
-            t1 = time.time()
-            self.risk_cruising()
-            elapse = time.time() - t1
-            self.update_services("poc_config", elapse)
+        web_site_fetch = WebSiteFetch(task_id=self.task_id,
+                                      sites=self.site_list,
+                                      options=self.options)
+        web_site_fetch.run()
 
         """服务识别（python）实现"""
         if self.options.get("npoc_service_detection"):
-            self.update_task_field("status", "npoc_service_detection")
+            base_update.update_task_field("status", "npoc_service_detection")
             t1 = time.time()
             self.npoc_service_detection()
             elapse = time.time() - t1
-            self.update_services("npoc_service_detection", elapse)
+            base_update.update_services("npoc_service_detection", elapse)
+
+        """ *** npoc 调用 """
+        if self.options.get("poc_config"):
+            base_update.update_task_field("status", "poc_run")
+            t1 = time.time()
+            web_site_fetch.risk_cruising(self.npoc_service_target_set)
+            elapse = time.time() - t1
+            base_update.update_services("poc_run", elapse)
 
         """弱口令爆破服务"""
         if self.options.get("brute_config"):
-            self.update_task_field("status", "weak_brute")
+            base_update.update_task_field("status", "weak_brute")
             t1 = time.time()
             self.brute_config()
             elapse = time.time() - t1
-            self.update_services("weak_brute", elapse)
+            base_update.update_services("weak_brute", elapse)
 
-        '''文件泄露'''
-        if self.options.get("file_leak"):
-            self.update_task_field("status", "file_leak")
-            t1 = time.time()
-            self.file_leak()
-            elapse = time.time() - t1
-            self.update_services("file_leak", elapse)
-
+        # 加上统计信息
+        self.insert_finger_stat()
+        self.insert_cip_stat()
         self.insert_task_stat()
 
-        self.insert_finger_stat()
+        # 如果有关联的资产分组就进行同步，同步这块有点乱
+        if self.task_tag == "task":
+            self.sync_asset()
 
-        self.update_task_field("status", TaskStatus.DONE)
-        self.update_task_field("end_time", utils.curr_date())
+        base_update.update_task_field("status", TaskStatus.DONE)
+        base_update.update_task_field("end_time", utils.curr_date())
 
 
 def ip_task(ip_target, task_id, options):
@@ -444,4 +309,4 @@ def ip_task(ip_target, task_id, options):
         d.run()
     except Exception as e:
         logger.exception(e)
-        d.update_task_field("status", "error")
+        d.base_update_task.update_task_field("status", "error")

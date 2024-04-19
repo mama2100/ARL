@@ -5,19 +5,18 @@ from app import utils
 from app import celerytask
 import time
 from app.modules import CeleryAction, SchedulerStatus, AssetScopeType
-from app.helpers import task_schedule, asset_site_monitor
+from app.helpers import task_schedule, asset_site_monitor, asset_wih_monitor
 
 logger = utils.get_logger()
 
 domain_monitor_options = {
     'domain_brute': True,
     'domain_brute_type': 'big',
-    'riskiq_search': True,
     'alt_dns': False,
     'arl_search': True,
     'port_scan_type': 'test',
     'port_scan': True,
-    'crtsh_search': True,
+    'dns_query_plugin': True,
     'site_identify': False
 }
 
@@ -40,7 +39,7 @@ def add_job(domain, scope_id, options=None, interval=60 * 1, name="", scope_type
     disable_options = {
         "domain_brute": False,
         "alt_dns": False,
-        "riskiq_search": False,
+        "dns_query_plugin": False,
         "arl_search": False
     }
 
@@ -84,6 +83,28 @@ def add_asset_site_monitor_job(scope_id, name, interval=60 * 1):
         "monitor_options": {},
         "name": name,
         "scope_type": "site_update_monitor"
+    }
+    conn('scheduler').insert(item)
+
+    return str(item["_id"])
+
+
+def add_asset_wih_monitor_job(scope_id, name, interval=60 * 1):
+    current_time = int(time.time()) + 30
+
+    item = {
+        "domain": "资产分组 WIH 更新",
+        "scope_id": scope_id,
+        "interval": interval,
+        "next_run_time": current_time,
+        "next_run_date": utils.time2date(current_time),
+        "last_run_time": 0,
+        "last_run_date": "-",
+        "run_number": 0,
+        "status": SchedulerStatus.RUNNING,
+        "monitor_options": {},
+        "name": name,
+        "scope_type": "wih_update_monitor"
     }
     conn('scheduler').insert(item)
 
@@ -201,6 +222,11 @@ def asset_monitor_scheduler():
                     asset_site_monitor.submit_asset_site_monitor_job(scope_id=scope_id,
                                                                      name=name,
                                                                      scheduler_id=str(item["_id"]))
+
+                if scope_type == "wih_update_monitor":
+                    asset_wih_monitor.submit_asset_wih_monitor_job(scope_id=scope_id,
+                                                                   name=name,
+                                                                   scheduler_id=str(item["_id"]))
 
                 else:
                     submit_job(domain=domain, job_id=str(item["_id"]),

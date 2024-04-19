@@ -1,8 +1,9 @@
 import threading
-from app.helpers import asset_site
+from app.helpers import asset_site, asset_domain
 from app import utils
 from app.helpers.scope import get_scope_by_scope_id
 from app.helpers.message_notify import push_email, push_dingding
+from app.helpers.asset_site_monitor import is_black_asset_site
 from .baseThread import BaseThread
 from .fetchSite import fetch_site
 
@@ -21,6 +22,10 @@ class AssetSiteCompare(BaseThread):
         self.site_change_map = {}
 
     def work(self, site):
+        if is_black_asset_site(site):
+            logger.debug("{} in black asset site".format(site))
+            return
+
         conn = utils.http_req(site)
         item = {
             "title": utils.get_title(conn.content),
@@ -33,7 +38,7 @@ class AssetSiteCompare(BaseThread):
         site_info_list = asset_site.find_site_info_by_scope_id(scope_id=self._scope_id)
         for site_info in site_info_list:
             curr_site = site_info["site"]
-            # 访问不了的站点，跳过
+            # 访问不了的站点和黑名单站点，跳过
             if curr_site not in self.new_site_info_map:
                 continue
 
@@ -54,6 +59,10 @@ class AssetSiteCompare(BaseThread):
     def run(self):
         self._run()
         self.compare()
+
+        # 已经用完了省一点空间。
+        self.new_site_info_map.clear()
+
         return self.site_change_map
 
 
@@ -62,6 +71,7 @@ class AssetSiteMonitor(object):
         self.scope_id = scope_id
         self.status_change_list = []
         self.title_change_list = []
+        self.site_change_info_list = []  # 保存变化了的站点信息，用于保存到任务中
         scope_data = get_scope_by_scope_id(self.scope_id)
         if not scope_data:
             raise Exception("没有找到资产组 {}".format(self.scope_id))
@@ -110,12 +120,15 @@ class AssetSiteMonitor(object):
 
     def build_change_list(self):
         compare = AssetSiteCompare(scope_id=self.scope_id)
+        # 根据资产组中的站点去重新请求，并比对状态码和标题。
         site_change_map = compare.run()
         sites = list(site_change_map.keys())
 
         if not sites:
             logger.info("not found change ok site, scope_id: {}".format(self.scope_id))
             return
+
+        logger.info("found scope site {}, scope_id: {}".format(len(sites), self.scope_id))
 
         site_info_list = fetch_site(sites)
 
@@ -130,26 +143,26 @@ class AssetSiteMonitor(object):
             old_site_info = site_change_map[curr_site]
 
             if self.compare_title(site_info, old_site_info):
+                self.site_change_info_list.append(site_info)
                 continue
 
             if self.compare_status(site_info, old_site_info):
+                self.site_change_info_list.append(site_info)
                 continue
 
+    # 对新发现的资产分组站点进行删除操作并添加一条新的数据
     def update_asset_site(self, asset_id, site_info):
         query = {
             "_id": asset_id
         }
         copy_site_info = site_info.copy()
-        if "favicon" in copy_site_info:
-            favicon = copy_site_info.pop("favicon")
-            if "data" in favicon:
-                copy_site_info["favicon.data"] = favicon["data"]
-                copy_site_info["favicon.url"] = favicon["url"]
-                copy_site_info["favicon.hash"] = favicon["hash"]
+        copy_site_info["scope_id"] = self.scope_id
+        curr_date = utils.curr_date_obj()
+        copy_site_info["save_date"] = curr_date
+        copy_site_info["update_date"] = curr_date
 
-        copy_site_info["update_date"] = utils.curr_date_obj()
-
-        utils.conn_db('asset_site').update(query, {"$set": copy_site_info})
+        utils.conn_db("asset_site").delete_one(query)
+        utils.conn_db("asset_site").insert_one(copy_site_info)
 
     def build_status_html_report(self):
         html = ""
@@ -290,6 +303,101 @@ class AssetSiteMonitor(object):
 
         markdown_report = self.build_markdown_report()
         push_dingding(markdown_report=markdown_report)
+
+
+class Domain2SiteMonitor(object):
+    def __init__(self, scope_id):
+        self.scope_id = scope_id
+        self.site_info_list = []
+        self.html_report = ""
+        self.dingding_markdown = ""
+
+    def find_not_domain_site(self):
+        sites = asset_site.find_site_by_scope_id(self.scope_id)
+        domains = asset_domain.find_domain_by_scope_id(self.scope_id)
+        ret = []
+        if len(domains) == 0:
+            return ret
+
+        logger.info("load {} domain, scope_id:{}".format(len(domains), self.scope_id))
+
+        have_domain_site_list = []
+        for site in sites:
+            netloc = utils.get_hostname(site)
+            curr_domain = netloc.split(":")[0]
+            have_domain_site_list.append(curr_domain)
+
+        no_domain_site_list = set(domains) - set(have_domain_site_list)
+        for domain in no_domain_site_list:
+            ret.append("https://{}".format(domain))
+
+        logger.info("load {} no_domain_site_list, scope_id:{}".format(len(ret), self.scope_id))
+
+        return ret
+
+    def run(self):
+        sites = self.find_not_domain_site()
+        if not sites:
+            return []
+
+        site_info_list = fetch_site(sites, concurrency=20, http_timeout=(5, 6))
+
+        # 过滤 502, 504
+        for site_info in site_info_list:
+            if site_info["status"] in [502, 504, 501, 422, 410]:
+                continue
+
+            # 过滤400 状态码
+            if site_info["status"] == 400 and "400" in site_info["title"]:
+                continue
+
+            self.site_info_list.append(site_info)
+
+        self.build_report()
+
+        if self.site_info_list:
+            self.insert_asset_site()
+
+        return self.site_info_list
+
+    def insert_asset_site(self):
+        for site_info in self.site_info_list:
+            site_info = site_info.copy()
+            site_info["scope_id"] = self.scope_id
+            curr_date = utils.curr_date_obj()
+            site_info["save_date"] = curr_date
+            site_info["update_date"] = curr_date
+            utils.conn_db('asset_site').insert_one(site_info)
+        logger.info("save asset_site {} to {}".format(len(self.site_info_list), self.scope_id))
+
+    def build_report(self):
+        from app.utils.push import dict2table, dict2dingding_mark
+        info_list = []
+        tr_cnt = 0
+        for site_info in self.site_info_list:
+            tr_cnt += 1
+            if tr_cnt > 8:
+                continue
+
+            info = {
+                "站点": site_info['site'],
+                "标题": site_info['title'],
+                "状态码": site_info['status'],
+                "页面长度": site_info['body_length']
+            }
+            info_list.append(info)
+
+        html = " <br/> 新发现站点 {} <br/>".format(
+            len(self.site_info_list))
+
+        html += dict2table(info_list)
+
+        mark = "  新发现站点 {}  ".format(len(self.site_info_list))
+
+        mark += dict2dingding_mark(info_list)
+
+        self.html_report = html
+        self.dingding_markdown = mark
 
 
 def asset_site_monitor(scope_id):

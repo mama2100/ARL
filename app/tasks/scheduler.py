@@ -5,11 +5,12 @@ from .domain import DomainTask
 from .ip import IPTask
 from app import utils
 from app.modules import TaskStatus, CollectSource, SchedulerStatus
-from app.services import sync_asset, build_domain_info
-logger = utils.get_logger()
+from app.services import sync_asset, build_domain_info, sync_asset
 import time
 from app.scheduler import update_job_run
+from app.services import webhook
 
+logger = utils.get_logger()
 
 def domain_executors(base_domain=None, job_id=None, scope_id=None, options=None, name=""):
     logger.info("start domain_executors {} {} {}".format(base_domain, scope_id, options))
@@ -45,7 +46,6 @@ def wrap_domain_executors(base_domain=None, job_id=None, scope_id=None, options=
         'options': {
             'domain_brute': True,
             'domain_brute_type': 'test',
-            'riskiq_search': False,
             'alt_dns': False,
             'arl_search': True,
             'port_scan_type': 'test',
@@ -60,7 +60,8 @@ def wrap_domain_executors(base_domain=None, job_id=None, scope_id=None, options=
             'search_engines': False,
             'ssl_cert': False,
             'fofa_search': False,
-            'crtsh_search': True,
+            'dns_query_plugin': False,
+            'web_info_hunter': False,
             'scope_id': scope_id
         },
         'celery_id': celery_id
@@ -77,6 +78,7 @@ def wrap_domain_executors(base_domain=None, job_id=None, scope_id=None, options=
         new_domain = domain_executor.run()
         if new_domain:
             sync_asset(task_id, scope_id, update_flag=True, push_flag=True, task_name=name)
+            webhook.domain_asset_web_hook(task_id=task_id, scope_id=scope_id)
     except Exception as e:
         logger.exception(e)
         domain_executor.update_task_field("status", TaskStatus.ERROR)
@@ -85,6 +87,7 @@ def wrap_domain_executors(base_domain=None, job_id=None, scope_id=None, options=
     logger.info("end domain_executors {} {} {}".format(base_domain, scope_id, options))
 
 
+# ***域名监控任务　＊＊＊
 class DomainExecutor(DomainTask):
     def __init__(self, base_domain, task_id, options):
         super().__init__(base_domain, task_id, options)
@@ -110,24 +113,25 @@ class DomainExecutor(DomainTask):
 
         self.set_domain_info_list()
 
-        #仅仅对新增域名保留
+        # 返回发现的新域名，在后续进行同步到资产组
+        ret_new_domain_set = set()
+        for domain_info in self.domain_info_list:
+            ret_new_domain_set.add(domain_info.domain)
+
+        # 仅仅对新增域名保留
         self.start_ip_fetch()
         self.start_site_fetch()
 
         # cidr ip 结果统计，插入cip 集合中
         self.insert_cip_stat()
 
-        # 任务结果统计
-        self.insert_task_stat()
         # 任务指纹信息统计
         self.insert_finger_stat()
+        # 任务结果统计
+        self.insert_task_stat()
 
         self.update_task_field("status", TaskStatus.DONE)
         self.update_task_field("end_time", utils.curr_date())
-
-        ret_new_domain_set = set()
-        for domain_info in self.domain_info_list:
-            ret_new_domain_set.add(domain_info.domain)
 
         return ret_new_domain_set
 
@@ -194,6 +198,7 @@ class DomainExecutor(DomainTask):
         return new
 
 
+# ***IP监控任务　＊＊＊
 class IPExecutor(IPTask):
     def __init__(self, target, scope_id, task_name,  options):
         super().__init__(ip_target=target, task_id=None, options=options)
@@ -213,6 +218,7 @@ class IPExecutor(IPTask):
             'end_time': '-',
             'status': TaskStatus.WAITING,
             'type': 'ip',
+            'task_tag': 'monitor',  # 标记为监控任务
             'options': {
                 "port_scan_type": "test",
                 "port_scan": True,
@@ -223,6 +229,7 @@ class IPExecutor(IPTask):
                 "file_leak": False,
                 "site_spider": False,
                 "ssl_cert": False,
+                'web_info_hunter': False,
                 'scope_id': self.scope_id
             },
             'celery_id': celery_id
@@ -234,6 +241,8 @@ class IPExecutor(IPTask):
         task_data["options"].update(self.options)
         conn('task').insert_one(task_data)
         self.task_id = str(task_data.pop("_id"))
+        # base_update_task 初始化在前，再设置回task_id
+        self.base_update_task.task_id = self.task_id
 
     def set_asset_ip(self):
         if self.task_tag != 'monitor':
@@ -294,36 +303,20 @@ class IPExecutor(IPTask):
         self.ip_info_list = new_ip_info_list
         logger.info("found new ip_info {}".format(len(self.ip_info_list)))
 
-    def async_site_info(self, site_info_list):
-        """
-        用来同步发现的 site 中的信息，仅仅在监控阶段使用
-        """
-        new_site_info_list = []
-        for site_info in site_info_list:
-            curr_date_obj = utils.curr_date_obj()
-            query = {"site":site_info["site"], "scope_id": self.scope_id}
-            data = utils.conn_db('asset_site').find_one(query)
-            if data:
-                continue
+    # 同步SITE 和 web_info_hunter 信息
+    def sync_asset_site_wih(self):
+        have_data = False
+        query = {"task_id": self.task_id}
 
-            new_site_info_list.append(site_info)
-            site_info["save_date"] = curr_date_obj
-            site_info["update_date"] = curr_date_obj
-            site_info["scope_id"] = self.scope_id
-            utils.conn_db('asset_site').insert_one(site_info)
+        if utils.conn_db('site').count_documents(query) or utils.conn_db('wih').count_documents(query):
+            have_data = True
 
-        new_asset_map = {
-            "site": new_site_info_list[:10],
-            "ip": self.ip_info_list[:10],
-            "task_name": self.task_name
-        }
-        new_asset_counter = {
-            "site": len(new_site_info_list),
-            "ip": len(self.ip_info_list)
-        }
+        # 有数据才同步
+        if not have_data:
+            return
 
-        if len(self.ip_info_list) > 0:
-            utils.message_push(asset_map=new_asset_map, asset_counter=new_asset_counter)
+        sync_asset(self.task_id, self.scope_id, update_flag=False, category=["site", "wih"],
+                   push_flag=True, task_name=self.task_name)
 
 
 def ip_executor(target, scope_id, task_name, job_id, options):
@@ -347,7 +340,9 @@ def ip_executor(target, scope_id, task_name, job_id, options):
     try:
         executor.insert_task_data()
         executor.run()
+        executor.sync_asset_site_wih()
+
     except Exception as e:
         logger.warning("error on ip_executor {}".format(executor.ip_target))
         logger.exception(e)
-        executor.update_task_field("status", TaskStatus.ERROR)
+        executor.base_update_task.update_task_field("status", TaskStatus.ERROR)

@@ -1,5 +1,0 @@
-google
-youtube
-facebook
-openvpn
-webproxy

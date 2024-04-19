@@ -1,6 +1,6 @@
 import re
 import bson
-from flask_restplus import Resource, Api, reqparse, fields, Namespace
+from flask_restx import Resource, Api, reqparse, fields, Namespace
 from bson import ObjectId
 from app import celerytask
 from app.utils import get_logger, auth
@@ -9,7 +9,7 @@ from app import utils
 from app.modules import TaskStatus, ErrorMsg, TaskSyncStatus, CeleryAction, TaskTag, TaskType
 from app.helpers import get_options_by_policy_id, submit_task_task,\
     submit_risk_cruising, get_scope_by_scope_id, check_target_in_scope
-
+from app.helpers.task import get_task_data, restart_task
 
 ns = Namespace('task', description="资产发现任务信息")
 
@@ -31,15 +31,23 @@ base_search_task_fields = {
     'options.site_identify': fields.Boolean(description="是否开启站点识别"),
     'options.file_leak': fields.Boolean(description="是否开启文件泄露扫描"),
     'options.alt_dns': fields.Boolean(description="是否开启DNS字典智能生成"),
-    # 'options.github_search_domain': fields.Boolean(description="是否开启GitHub搜索"),
-    # 'options.fetch_api_path': fields.Boolean(description="是否开启JS PATH收集"),
     'options.search_engines': fields.Boolean(description="是否开启搜索引擎调用"),
     'options.site_spider': fields.Boolean(description="是否开启站点爬虫"),
-    'options.riskiq_search': fields.Boolean(description="是否开启 Riskiq 调用"),
     'options.arl_search': fields.Boolean(description="是否开启 ARL 历史查询"),
-    'options.crtsh_search': fields.Boolean(description="是否开启 crt.sh 查询"),
-    'options.skip_scan_cdn_ip': fields.Boolean(description="是否跳过CDN IP端口扫描")
-
+    'options.dns_query_plugin': fields.Boolean(description="是否开启域名插件查询"),
+    'options.skip_scan_cdn_ip': fields.Boolean(description="是否跳过CDN IP端口扫描"),
+    'options.nuclei_scan': fields.Boolean(description="是否开启nuclei 扫描"),
+    'options.findvhost': fields.Boolean(description="是否开启Host碰撞检测"),
+    'options.web_info_hunter': fields.Boolean(description="是否开启 webInfoHunter"),
+    'statistic.site_cnt': fields.Integer(description="站点数量等于"),
+    'statistic.site_cnt__gt': fields.Integer(description="站点数量大于"),
+    'statistic.site_cnt__lt': fields.Integer(description="站点数量小于"),
+    'statistic.domain_cnt': fields.Integer(description="域名数量等于"),
+    'statistic.domain_cnt__gt': fields.Integer(description="域名数量大于"),
+    'statistic.domain_cnt__lt': fields.Integer(description="域名数量小于"),
+    'statistic.wih_cnt': fields.Integer(description="WIH 数量等于"),
+    'statistic.wih_cnt__gt': fields.Integer(description="WIH 数量大于"),
+    'statistic.wih_cnt__lt': fields.Integer(description="WIH 数量小于"),
 }
 
 base_search_task_fields.update(base_query_fields)
@@ -47,13 +55,13 @@ base_search_task_fields.update(base_query_fields)
 search_task_fields = ns.model('SearchTask', base_search_task_fields)
 
 add_task_fields = ns.model('AddTask', {
-    'name': fields.String(required=True, description="任务名"),
-    'target': fields.String(required=True, description="目标"),
-    "domain_brute": fields.Boolean(),
-    'domain_brute_type': fields.String(),
-    "port_scan_type": fields.String(description="端口扫描类型"),
-    "port_scan": fields.Boolean(),
-    "service_detection": fields.Boolean(),
+    'name': fields.String(required=True, example="task name", description="任务名"),
+    'target': fields.String(required=True, example="www.freebuf.com", description="目标"),
+    "domain_brute": fields.Boolean(example=True),
+    'domain_brute_type': fields.String(example="test"),
+    "port_scan_type": fields.String(example="test", description="端口扫描类型"),
+    "port_scan": fields.Boolean(example=True),
+    "service_detection": fields.Boolean(example=False),
     "service_brute": fields.Boolean(example=False),
     "os_detection": fields.Boolean(example=False),
     "site_identify": fields.Boolean(example=False),
@@ -62,13 +70,13 @@ add_task_fields = ns.model('AddTask', {
     "search_engines": fields.Boolean(example=False),
     "site_spider": fields.Boolean(example=False),
     "arl_search": fields.Boolean(example=False),
-    "riskiq_search": fields.Boolean(example=False),
-    "alt_dns": fields.Boolean(),
-    "github_search_domain": fields.Boolean(),
-    "ssl_cert": fields.Boolean(),
-    "fetch_api_path": fields.Boolean(),
-    "crtsh_search": fields.Boolean(example=True, default=True),
-    "skip_scan_cdn_ip": fields.Boolean()
+    "alt_dns": fields.Boolean(example=False),
+    "ssl_cert": fields.Boolean(example=False),
+    "dns_query_plugin": fields.Boolean(example=False, default=False),
+    "skip_scan_cdn_ip": fields.Boolean(example=False, default=False),
+    "nuclei_scan": fields.Boolean(description="nuclei 扫描", example=False, default=False),
+    "findvhost": fields.Boolean(example=False, default=False),
+    "web_info_hunter": fields.Boolean(example=False, default=False, description="WEB JS 中的信息收集"),
 })
 
 
@@ -172,9 +180,9 @@ def stop_task(task_id):
 
     control.revoke(celery_id, signal='SIGTERM', terminate=True)
 
-    utils.conn_db('task').update_one({'_id': ObjectId(task_id)}, {"$set": {"status": TaskStatus.STOP}})
-
-    utils.conn_db('task').update_one({'_id': ObjectId(task_id)}, {"$set": {"end_time": utils.curr_date()}})
+    # 这里还是强制更新一下状态
+    update_data = {"$set": {"status": TaskStatus.STOP, "end_time": utils.curr_date()}}
+    utils.conn_db('task').update_one({'_id': ObjectId(task_id)}, update_data)
 
     return utils.build_ret(ErrorMsg.Success, {"task_id": task_id})
 
@@ -208,7 +216,9 @@ class DeleteTask(ARLResource):
 
         for task_id in task_id_list:
             utils.conn_db('task').delete_many({'_id': ObjectId(task_id)})
-            table_list = ["cert", "domain", "fileleak", "ip", "service", "site", "url", "vuln", "cip"]
+            table_list = ["cert", "domain", "fileleak","ip", "service",
+                          "site", "url", "vuln", "cip", "npoc_service", "wih", "nuclei_result", "stat_finger"]
+
             if del_task_data_flag:
                 for name in table_list:
                     utils.conn_db(name).delete_many({'task_id': task_id})
@@ -391,8 +401,38 @@ class TaskByPolicy(ARLResource):
         return utils.build_ret(ErrorMsg.Success, {"items": task_data_list})
 
 
+restart_task_fields = ns.model('DeleteTask',  {
+    'task_id': fields.List(fields.String(required=True, description="任务ID"))
+})
 
 
+# ******* 重新下发任务功能 *********
+@ns.route('/restart/')
+class TaskRestart(ARLResource):
+    @auth
+    @ns.expect(restart_task_fields)
+    def post(self):
+        """
+        任务重启
+        """
+        done_status = [TaskStatus.DONE, TaskStatus.STOP, TaskStatus.ERROR]
+        args = self.parse_args(restart_task_fields)
+        task_id_list = args.pop('task_id')
 
+        try:
+            for task_id in task_id_list:
+                task_data = get_task_data(task_id)
+                if not task_data:
+                    return utils.build_ret(ErrorMsg.NotFoundTask, {"task_id": task_id})
+
+                if task_data["status"] not in done_status:
+                    return utils.build_ret(ErrorMsg.TaskIsRunning, {"task_id": task_id})
+
+                restart_task(task_id)
+
+        except Exception as e:
+            return utils.build_ret(ErrorMsg.Error, {"error": str(e)})
+
+        return utils.build_ret(ErrorMsg.Success, {"task_id": task_id_list})
 
 

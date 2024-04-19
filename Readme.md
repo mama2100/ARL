@@ -13,33 +13,44 @@
 
 在开始使用之前，请务必阅读并同意[免责声明](Disclaimer.md)中的条款，否则请勿下载安装使用本系统。
 
+### 特性
+1. 域名资产发现和整理
+2. IP/IP 段资产整理
+3. 端口扫描和服务识别
+4. WEB 站点指纹识别
+5. 资产分组管理和搜索
+6. 任务策略配置
+7. 计划任务和周期任务
+8. Github 关键字监控
+9. 域名/IP 资产监控
+10. 站点变化监控
+11. 文件泄漏等风险检测
+12. nuclei PoC 调用
+13. [WebInfoHunter](https://tophanttechnology.github.io/ARL-doc/function_desc/web_info_hunter/) 调用和监控
+
 ### 系统要求
 
-目前暂不支持Windows。Linux和MAC建议采用Docker运行，系统配置最低2核4G。  
-由于自动资产发现过程中会有大量的的发包，建议采用云服务器可以带来更好的体验。  
+目前暂不支持Windows，初次体验可采用Docker方式运行，长期使用建议采用源码安装方式运行。系统配置建议：CPU:4线程 内存:8G 带宽:10M。  
+由于自动资产发现过程中会有大量的的发包，建议采用云服务器可以带来更好的体验。
 
 ### Docker 启动
 
-```
-git clone https://github.com/TophantTechnology/ARL
-cd ARL/docker/
-docker volume create arl_db
-docker-compose pull
-docker-compose up -d 
-```
 
-或者直接下载`docker-compose`配置文件启动
 ```
+cd /opt/
 mkdir docker_arl
-wget -O docker_arl/docker.zip https://github.com/TophantTechnology/ARL/releases/download/v2.4.1/docker.zip
+wget -O docker_arl/docker.zip https://github.com/TophantTechnology/ARL/releases/download/v2.6.2/docker.zip
 cd docker_arl
 unzip -o docker.zip
-docker-compose pull
 docker volume create arl_db
-docker-compose up -d
+docker compose pull
+docker compose up -d
 ```
 
-详细说明可以参考: [Docker 环境安装 ARL](https://github.com/TophantTechnology/ARL/wiki/Docker-%E7%8E%AF%E5%A2%83%E5%AE%89%E8%A3%85-ARL)
+
+Ubuntu 下可以直接执行 `apt-get install docker.io docker-compose -y` 安装相关依赖
+
+详细说明可以参考: [Docker 环境安装 ARL](https://tophanttechnology.github.io/ARL-doc/system_install/)
 
 ### 截图
 
@@ -83,19 +94,22 @@ docker-compose up -d
 | 4    | 端口扫描类型    | ALL：全部端口，TOP1000：常用top 1000端口，TOP100：常用top 100端口，测试：少数几个端口 |
 | 5    | 域名爆破        | 是否开启域名爆破                                                                   |
 | 6    | DNS字典智能生成 | 根据已有的域名生成字典进行爆破                                                      |
-| 7    | Riskiq 调用    | 利用[RiskIQ](https://community.riskiq.com/)  API进行查询域名                       |
+| 7    | 域名查询插件    |  已支持的数据源为13个，`alienvault`, `certspotter`,`crtsh`,`fofa`,`hunter` 等        |
 | 8    | ARL 历史查询    | 对arl历史任务结果进行查询用于本次任务                                                |
-| 9    | crt.sh 调用    | 利用 crt.sh 网站 API 进行子域名发现                                                 |
-| 10    | 端口扫描        | 是否开启端口扫描，不开启站点会默认探测80,443                                         |
-| 11   | 服务识别        | 是否进行服务识别，有可能会被防火墙拦截导致结果为空                                     |
-| 12   | 操作系统识别    | 是否进行操作系统识别，有可能会被防火墙拦截导致结果为空                                 |
-| 13   | SSL 证书获取    | 对端口进行SSL 证书获取                                                             |
+| 9    | 端口扫描        | 是否开启端口扫描，不开启站点会默认探测80,443                                         |
+| 10   | 服务识别        | 是否进行服务识别，有可能会被防火墙拦截导致结果为空                                     |
+| 11   | 操作系统识别    | 是否进行操作系统识别，有可能会被防火墙拦截导致结果为空                                 |
+| 12   | SSL 证书获取    | 对端口进行SSL 证书获取                                                             |
+| 13   | 跳过CDN       | 对判定为CDN的IP, 将不会扫描端口，并认为80，443是端口是开放的                             |
 | 14   | 站点识别        | 对站点进行指纹识别                                                                 |
-| 15   | 搜索引擎调用    | 利用搜索引擎结果爬取对应的URL                                                       |
+| 15   | 搜索引擎调用    | 利用搜索引擎搜索下发的目标爬取对应的URL和子域名                                                       |
 | 16   | 站点爬虫        | 利用静态爬虫对站点进行爬取对应的URL                                                  |
 | 17   | 站点截图        | 对站点首页进行截图                                                                 |
 | 18   | 文件泄露        | 对站点进行文件泄露检测，会被WAF拦截                                                  |
-
+| 19   | Host 碰撞        | 对vhost配置不当进行检测                                                |
+| 20    | nuclei 调用    | 调用nuclei 默认PoC 对站点进行检测 ，会被WAF拦截，请谨慎使用该功能                |
+| 21   | WIH 调用      | 调用 WebInfoHunter 工具在JS中收集域名,AK/SK等信息                     |
+| 22   | WIH 监控任务   | 对资产分组中的站点周期性 调用 WebInfoHunter 工具在JS中域名等信息进行监控  |
 
 ### 配置参数说明
 
@@ -105,7 +119,7 @@ Docker环境配置文件路径 `docker/config-docker.yaml`
 | ----------------- | ------------------------------------ |
 | CELERY.BROKER_URL | rabbitmq连接信息                      |
 | MONGO             | mongo 连接信息                        |
-| RISKIQ            | riskiq API 配置信息                   |
+| QUERY_PLUGIN      | 域名查询插件数据源Token 配置             |
 | GEOIP             | GEOIP 数据库路径信息                  |
 | FOFA              | FOFA API 配置信息                     |
 | DINGDING          | 钉钉消息推送配置                     |
@@ -117,7 +131,11 @@ Docker环境配置文件路径 `docker/config-docker.yaml`
 | ARL.PORT_TOP_10     | 自定义端口，对应前端端口测试选项      |
 | ARL.DOMAIN_DICT     | 域名爆破字典，对应前端大字典选项      |
 | ARL.FILE_LEAK_DICT     | 文件泄漏字典      |
-
+| ARL.DOMAIN_BRUTE_CONCURRENT     | 域名爆破并发数配置      |
+| ARL.ALT_DNS_CONCURRENT     | 组合生成的域名爆破并发数      |
+| PROXY.HTTP_URL     | HTTP代理URL设置      |
+| FEISHU | 飞书消息推送配置 |
+| WXWORK | 企业微信消息推送 |
 
 
 ### 忘记密码重置
@@ -134,7 +152,7 @@ db.user.insert({ username: 'admin',  password: hex_md5('arlsalt!@#'+'admin123') 
 ### 源码安装
 
 仅仅适配了 centos 7 ，且灯塔安装目录为/opt/ARL
-如果在其他目录可以创建软连接，且安装了三个服务分别为`arl-web`, `arl-worker`, `arl-scheduler`
+如果在其他目录可以创建软连接，且安装了四个服务分别为`arl-web`, `arl-worker`, `arl-worker-github`, `arl-scheduler`
 
 ```
 wget https://raw.githubusercontent.com/TophantTechnology/ARL/master/misc/setup-arl.sh
@@ -143,18 +161,9 @@ chmod +x setup-arl.sh
 ```
 
 
-### Docker 环境安装
-
-仅仅适配了 centos 7 ，且灯塔安装目录为/opt/ARL
-```
-wget https://raw.githubusercontent.com/TophantTechnology/ARL/master/misc/setup-docker-arl.sh
-chmod +x setup-docker-arl.sh
-./setup-docker-arl.sh
-```
-
 ### FAQ
 
-请访问如下链接[FAQ](https://github.com/TophantTechnology/ARL/wiki/Docker-%E7%8E%AF%E5%A2%83%E5%AE%89%E8%A3%85-ARL#faq)
+请访问如下链接[FAQ](https://tophanttechnology.github.io/ARL-doc/faq/)
 
 ### 写在最后
 

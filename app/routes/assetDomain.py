@@ -1,6 +1,6 @@
 import re
 from bson import ObjectId
-from flask_restplus import Resource, Api, reqparse, fields, Namespace
+from flask_restx import Resource, Api, reqparse, fields, Namespace
 from app import utils
 from app.utils import get_logger, auth
 from . import base_query_fields, ARLResource, get_arl_parser
@@ -114,7 +114,7 @@ class ARLAssetDomain(ARLResource):
             'search_engines': False,
             'ssl_cert': False,
             'fofa_search': False,
-            'crtsh_search': False,
+            'dns_query_plugin': False,
             'related_scope_id': scope_id
         }
 
@@ -122,6 +122,7 @@ class ARLAssetDomain(ARLResource):
             if policy_id and len(policy_id) == 24:
                 policy_options = get_options_by_policy_id(policy_id=policy_id, task_tag=TaskTag.TASK)
                 if policy_options:
+                    policy_options["related_scope_id"] = scope_id
                     options.update(policy_options)
 
             submit_task_task(target=target, name=name, options=options)

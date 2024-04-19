@@ -2,6 +2,7 @@ from .ipInfo import PortInfo, IPInfo
 from .baseInfo import BaseInfo
 from .domainInfo import DomainInfo
 from .pageInfo import PageInfo
+from .wihRecord import WihRecord
 from app.config import Config
 
 
@@ -20,13 +21,11 @@ class DomainDictType:
 class CollectSource:
     DOMAIN_BRUTE = "domain_brute"
     BAIDU = "baidu"
-    RISKIQ = "riskIQ"
-    ALTDNS = "altdns"
+    ALTDNS = "alt_dns"
     ARL = "arl"
     SITESPIDER = "site_spider"
     SEARCHENGINE = "search_engine"
     MONITOR = "monitor"
-    CRTSH = "crtsh"
 
 
 class TaskStatus:
@@ -71,6 +70,15 @@ class TaskType:
     """资产站点更新"""
     ASSET_SITE_UPDATE = "asset_site_update"
 
+    """Fofa 任务"""
+    FOFA = "fofa"
+
+    """资产站点添加"""
+    ASSET_SITE_ADD = "asset_site_add"
+
+    """资产 WIH 更新"""
+    ASSET_WIH_UPDATE = "asset_wih_update"
+
 
 class SiteAutoTag:
     ENTRY = "入口"
@@ -99,6 +107,36 @@ class PoCCategory:
     SNIFFER = "协议识别"
     SYSTEM_BRUTE = "服务弱口令"
     WEBB_RUTE = "应用弱口令"
+
+
+class WebSiteFetchOption:
+    # 针对WEB站点，可选功能选项
+    SITE_CAPTURE = "site_capture"
+    SEARCH_ENGINES = "search_engines"
+    SITE_SPIDER = "site_spider"
+    FILE_LEAK = "file_leak"
+    POC_RUN = "poc_config"
+    SITE_IDENTIFY = "site_identify"
+    NUCLEI_SCAN = "nuclei_scan"  # nuclei 扫描
+    Info_Hunter = "web_info_hunter"  # 对 JS 调用WebInfoHunter
+
+
+class WebSiteFetchStatus:
+    # 针对WEB站点任务可能的状态
+    FETCH_SITE = "fetch_site"
+    SITE_CAPTURE = "site_capture"
+    SEARCH_ENGINES = "search_engines"
+    SITE_SPIDER = "site_spider"
+    FILE_LEAK = "file_leak"
+    SITE_IDENTIFY = "site_identify"
+    POC_RUN = "poc_run"
+    NUCLEI_SCAN = "nuclei_scan"
+    Info_Hunter = "web_info_hunter"  # 对 JS 调用WebInfoHunter
+
+
+class CeleryRoutingKey:
+    ASSET_TASK = "arltask"
+    GITHUB_TASK = "arlgithub"
 
 
 class CeleryAction:
@@ -133,6 +171,12 @@ class CeleryAction:
 
     """资产站点更新任务"""
     ASSET_SITE_UPDATE = "asset_site_update"
+
+    """资产站点添加站点"""
+    ADD_ASSET_SITE_TASK = "add_asset_site_task"
+
+    """资产WIH更新任务"""
+    ASSET_WIH_UPDATE = "asset_wih_update"
 
 
 error_map = {
@@ -359,7 +403,23 @@ error_map = {
     "TaskScheduleNotFound": {
         "message": "计划任务没有找到",
         "code": 1605,
-    }
+    },
+    "DomainSiteViaJob": {
+        "message": "资产站点更新任务已存在",
+        "code": 1607,
+    },
+    "AddAssetSiteNotSupportIP": {
+        "message": "不支持对IP资产组添加站点",
+        "code": 1608,
+    },
+    "RuleAlreadyExists": {
+        "message": "规则已存在",
+        "code": 1609,
+    },
+    "ExcludePortsInvalid": {
+        "message": "nmap 排除端口错误",
+        "code": 1610,
+    },
 }
 
 
@@ -420,4 +480,8 @@ class ErrorMsg:
     TaskTagInvalid = error_map["TaskTagInvalid"]
     FutureDateInvalid = error_map["FutureDateInvalid"]
     TaskScheduleNotFound = error_map["TaskScheduleNotFound"]
+    DomainSiteViaJob = error_map["DomainSiteViaJob"]
+    AddAssetSiteNotSupportIP = error_map["AddAssetSiteNotSupportIP"]
+    RuleAlreadyExists = error_map["RuleAlreadyExists"]
+    ExcludePortsInvalid = error_map["ExcludePortsInvalid"]
 
